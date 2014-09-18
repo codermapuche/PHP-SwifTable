@@ -24,7 +24,7 @@
     const ERROR_PREPARE_STMT = "Error %1\$n preparando la sentencia. %2\$s.";
     const ERROR_BIND_PARAM = "Error al agregar los parametros a la sentencia.";
     const ERROR_EXECUTE_STMT = "Error %1\$n ejecutando la sentencia. %2\$s.";
-    const ERROR_COUNT_PK_VALUES = "La pk tiene %1\$n valor(es), pero se especifico %2\$n.";
+    const ERROR_COUNT_PK_VALUES = "La pk tiene %1\$s valor(es), pero se especifico %2\$s.";
 
 	/*/
      * Nombre de la base de datos que se usara.
@@ -39,7 +39,7 @@
      *
 	 * @since 1.9.0
 	/*/
-    public static $log_querys = true;
+    public static $log_querys = false;
 
 	/*/
      * Conexion Mysqli abierta.
@@ -121,9 +121,9 @@
 	 * @var Array
 	/*/
 	public $result = null;
-    
+
 	/*/
-     * Metodo para realizar el log de las consultas.
+     * Metodo para realizar un log.
 	 *
 	 * @since 1.9.0
 	/*/
@@ -131,12 +131,12 @@
     {
         if(self::$log_querys)
         {
-            $arch = fopen(__DIR__."/querys.log", "a+"); 
+            $arch = fopen(__DIR__."/swiftable_querys.log", "a+");
             fwrite($arch, "[".date("Y-m-d H:i:s")." $_SERVER[REMOTE_ADDR]] $query -> (".implode(" | ", ($params ? $params : [])).")\n");
             fclose($arch);
         }
     }
-    
+
 	/*/
      * Metodos para el manejo de cache, tambien pueden usarse publicamente para guardar y recuperar datos.
 	 *
@@ -430,9 +430,9 @@
                 $foreign->field($field);
         }
         $foreign->join($this->_table)->on($ftable.".".$this->_fk[$ftable]["field"], "=", $this->_table.".".$this->_fk[$ftable]["from"]);
-		
+
 		$foreign->where($ftable.".".$this->_fk[$ftable]["field"], (is_null($this->props[$this->_fk[$ftable]["from"]]) ? "IS NULL" : "="), $this->props[$this->_fk[$ftable]["from"]]);
-		
+
         return $foreign->first();
     }
 
@@ -544,7 +544,7 @@
             // Si la tabla soporta bajas logicas, y no se esta utilizando este campo en las condiciones, por defecto no trae las eliminadas.
             if(array_key_exists("delete_at", $this->props) && (!isset($this->blocks["where"]) || (strpos($this->blocks["where"], "delete_at") === false)))
                 $this->where($this->_table.".delete_at", "IS NULL");
-            
+
             $this->result = $this->exec("SELECT ".implode(" ", $config).$fields
                                         ." FROM "
                                         .(isset($this->blocks["from"])   ? $this->blocks["from"]   : "")
@@ -683,8 +683,8 @@
 	/*/
 	public function exec($query = "", $params = [], $cache = false)
 	{
-        self::logQuery($query, $params);
-        
+        self::logQuery($query, array_merge(($params ? $params : []), (isset($this->blocks["group"]) ? [$this->blocks["group"]] : [])));
+
         if($query && $this->_stmt)
             $this->_stmt = !$this->_stmt->close();
 
@@ -703,7 +703,7 @@
         }
 
 		if(!$this->_stmt)
-		{            
+		{
 			if(!($this->_stmt = self::$_instance->prepare($query)))
                 throw new Exception(sprintf(self::ERROR_PREPARE_STMT, self::$_instance->errno, self::$_instance->error." (SQL = \"$query\")"));
 			elseif($params)
@@ -766,10 +766,12 @@
             // Si la tabla soporta bajas logicas, y no se esta utilizando este campo en las condiciones, por defecto no trae las eliminadas.
             if(array_key_exists("delete_at", $this->props) && (!isset($this->blocks["where"]) || (strpos($this->blocks["where"], "delete_at") === false)))
                 $this->where($this->_table.".delete_at", "IS NULL");
-                
+
             $value = $this->exec("SELECT $type($field) fnc FROM "
                             .(isset($this->blocks["from"])   ? $this->blocks["from"]   : "")
-                            .(isset($this->blocks["where"])  ? $this->blocks["where"]  : ""),
+                            .(isset($this->blocks["where"])  ? $this->blocks["where"]  : "")
+                            .(isset($this->blocks["group"])  ? $this->blocks["group"]  : "")
+                            .(isset($this->blocks["having"]) ? $this->blocks["having"] : ""),
                             array_merge(
                                (isset($this->params["table"])  ? $this->params["table"]  : [])
                              , (isset($this->params["where"])  ? $this->params["where"]  : [])
@@ -811,14 +813,14 @@
         {
             if(isset($this->blocks["fields"]))
                 $keys = array_keys($this->blocks["fields"]);
-            else 
+            else
                 $keys = array_diff(array_keys($this->props), ["create_at", "update_at", "delete_at"]);
-            
+
             $data = [];
             foreach($keys as $key)
                 $data[$key] = &$this->props[$key];
             unset($keys);
-            
+
             if($which == "INSERT INTO" && array_key_exists("create_at", $this->props))
             {
                 $fecha = date("Y-m-d H:i:s");
@@ -828,8 +830,8 @@
             if($update)
             {
                 $aditional = " ON DUPLICATE KEY UPDATE ";
-                if(array_key_exists("update_at", $this->props)) 
-                    $aditional .= "update_at = NOW(), ";                
+                if(array_key_exists("update_at", $this->props))
+                    $aditional .= "update_at = NOW(), ";
                 $update = array_diff($update, $this->_pk, ["create_at", "update_at", "delete_at"]);
 
                 foreach($update as $field)
@@ -894,24 +896,45 @@
             }
             else
                 $this->limit($rows);
-
             
-            $uFields = (isset($this->blocks["fields"]) ? array_keys($this->blocks["fields"]) : array_diff(array_keys($this->props), $this->_pk, ["create_at", "update_at", "delete_at"]));
-            
-            if(array_key_exists("update_at", $this->props) && !in_array("delete_at", $uFields))
-            {
-                $uFields[] = "update_at";
-                $this->props["update_at"] = date("Y-m-d H:i:s");
-            }
-            
+            $uFields = "";
             $uValues = [];
-            foreach($uFields as $field)
-                $uValues[] = &$this->props[$field];            
+            if(isset($this->blocks["fields"]))
+            {
+                if(array_key_exists("update_at", $this->props) && !array_key_exists("delete_at", $this->blocks["fields"]) && !array_key_exists("update_at", $this->blocks["fields"]))
+                {
+                    $this->blocks["fields"]["update_at"] = "update_at";
+                    $this->props["update_at"] = date("Y-m-d H:i:s");                
+                }
+                    
+                foreach($this->blocks["fields"] as $field => $value)
+                {
+                    if($field == $value)
+                    {
+                        $uFields .= ($uFields ? ", " : "")."$field = ?";
+                        $uValues[] = &$this->props[$field];                    
+                    }
+                    else 
+                        $uFields .= ($uFields ? ", " : "")."$field = $value";
+                }
+                
+                if(isset($this->params["fields"]))
+                    $uValues = array_merge($uValues, $this->params["fields"]);
+            }
+            else
+            {
+                if(array_key_exists("update_at", $this->props))
+                    $this->props["update_at"] = date("Y-m-d H:i:s");
+                foreach(array_diff(array_keys($this->props), $this->_pk, ["create_at", "delete_at"]) as $field)
+                {
+                    $uFields .= ($uFields ? ", " : "")."$field = ?";
+                    $uValues[] = &$this->props[$field];
+                }
+            }
             
             $this->exec("UPDATE "
                         .$this->blocks["from"]
-                        ." SET "
-                        .implode($uFields, " = ?, ")." = ? "
+                        ." SET $uFields"
                         .$this->blocks["where"]
                         .(isset($this->blocks["limit"]) ? $this->blocks["limit"] : ""),
                         array_merge($uValues, $this->params["where"], (isset($this->params["limit"]) ? $this->params["limit"] : []))
@@ -1076,7 +1099,7 @@
 	{
         if(isset($this->_dialog["query"]))
             unset($this->_dialog["query"]);
-            
+
         if(!isset($this->blocks[$cond]) || !$this->blocks[$cond])
         {
             $this->blocks[$cond] = " ".strtoupper($cond)." ";
@@ -1176,7 +1199,7 @@
             $values = [$values];
 
         if(count($this->_pk) != count($values))
-            throw new Exception(sprintf(self::ERROR_COUNT_PK_VALUES, count($values), count($this->_pk)));
+            throw new Exception(sprintf(self::ERROR_COUNT_PK_VALUES, count($this->_pk), count($values)));
 
         foreach($this->_pk as $nro => $field)
             $this->cond($this->_table.".$field", "=", $values[$nro], "AND", "where");
@@ -1324,5 +1347,4 @@
             $this->_stmt->close();
     }
 
- } // END Class SwifTable 
- 
+ } // END Class SwifTable
