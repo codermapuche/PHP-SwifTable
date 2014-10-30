@@ -9,7 +9,6 @@
   * @version 1.9.0
   *
   * @TODO:  Agregar metodos de cache en sesiones.
-  *         Actualizar los metodos de transacciones.
  /*/
  class SwifTable implements arrayaccess, iteratoraggregate, countable, serializable
  {
@@ -121,21 +120,6 @@
 	 * @var Array
 	/*/
 	public $result = null;
-
-	/*/
-     * Metodo para realizar un log.
-	 *
-	 * @since 1.9.0
-	/*/
-    public static function logQuery($query, $params)
-    {
-        if(self::$log_querys)
-        {
-            $arch = fopen(__DIR__."/swiftable_querys.log", "a+");
-            fwrite($arch, "[".date("Y-m-d H:i:s")." $_SERVER[REMOTE_ADDR]] $query -> (".implode(" | ", ($params ? $params : [])).")\n");
-            fclose($arch);
-        }
-    }
 
 	/*/
      * Metodos para el manejo de cache, tambien pueden usarse publicamente para guardar y recuperar datos.
@@ -256,7 +240,7 @@
                   <dd>
                     <table>
                         <tr><th>".implode("</th><th>", array_keys((array) $this->result[0]))."</th></tr>
-                        <tr><td>".implode('</td></tr><tr><td>', array_map(function($res){ return implode("</td><td>",$res); }, $this->result))."</td></tr>
+                        <tr><td>".implode("</td></tr><tr><td>", array_map(function($res){ return implode("</td><td>",$res); }, $this->result))."</td></tr>
                     </table>
                   </dd>
                 </dl>";
@@ -544,7 +528,7 @@
             // Si la tabla soporta bajas logicas, y no se esta utilizando este campo en las condiciones, por defecto no trae las eliminadas.
             if(array_key_exists("delete_at", $this->props) && (!isset($this->blocks["where"]) || (strpos($this->blocks["where"], "delete_at") === false)))
                 $this->where($this->_table.".delete_at", "IS NULL");
-
+                
             $this->result = $this->exec("SELECT ".implode(" ", $config).$fields
                                         ." FROM "
                                         .(isset($this->blocks["from"])   ? $this->blocks["from"]   : "")
@@ -566,7 +550,7 @@
 
 		return $this;
 	}
-
+    
 	/*/
      * Alias amigables de SwifTable::select();
 	 *
@@ -671,6 +655,20 @@
     }
 
 	/*/
+     * Define una variable mysql para la proxima sentencia.
+	 *
+	 * @since 1.9.0
+	 * @param string   $var    Nombre de la variable.
+	 * @param array    $value  Valor inicial.
+	 * @return SwifTable
+	/*/
+	public function setVar($var, $value = 0)
+    {
+        self::$_instance->query("SET $var := $value;");
+        return $this;
+    }
+
+	/*/
      * Ejecuta una sentencia preparada o prepara y ejecuta una nueva.
 	 *
 	 * @since 1.9.0
@@ -683,7 +681,12 @@
 	/*/
 	public function exec($query = "", $params = [], $cache = false)
 	{
-        self::logQuery($query, array_merge(($params ? $params : []), (isset($this->blocks["group"]) ? [$this->blocks["group"]] : [])));
+        if(self::$log_querys)
+        {
+            $arch = fopen(__DIR__."/swiftable_querys.log", "a+");
+            fwrite($arch, "[".date("Y-m-d H:i:s")." $_SERVER[REMOTE_ADDR]] $query -> (".implode(" | ", ($params ? $params : ["Sin parametros"])).")\n");
+            fclose($arch);
+        }
 
         if($query && $this->_stmt)
             $this->_stmt = !$this->_stmt->close();
@@ -734,8 +737,11 @@
 			$result = [];
 			if($registros = $this->_stmt->get_result())
 			{
-				while($registro = $registros->fetch_array(MYSQLI_ASSOC))
-					$result[] = $registro;
+                while($registro = $registros->fetch_array(MYSQLI_ASSOC))
+                    if(isset($this->_dialog["index_by"]))
+                        $result[$registro[$this->_dialog["index_by"]]] = $registro;
+                    else
+                        $result[] = $registro;
 			}
 		}
 
@@ -744,6 +750,12 @@
 
 		return $result;
 	}
+
+    public function index_by($column)
+    {
+        $this->_dialog["index_by"] = $column;
+        return $this;
+    }
 
 	/*/
      * Llama a una funcion de mysql con los parametros proporcionados y retorna el resultado.
@@ -887,7 +899,7 @@
         else
 		{
             // Si no hay condiciones, filtra por la clave primaria y actualiza solo 1 registro.
-            if(!isset($this->blocks["where"]))
+            if(!isset($this->blocks["where"]) && $this->issetpk())
             {
                 foreach($this->_pk as $field)
                     $this->where($field, "=", $this->props[$field]);
@@ -896,7 +908,7 @@
             }
             else
                 $this->limit($rows);
-            
+
             $uFields = "";
             $uValues = [];
             if(isset($this->blocks["fields"]))
@@ -904,20 +916,20 @@
                 if(array_key_exists("update_at", $this->props) && !array_key_exists("delete_at", $this->blocks["fields"]) && !array_key_exists("update_at", $this->blocks["fields"]))
                 {
                     $this->blocks["fields"]["update_at"] = "update_at";
-                    $this->props["update_at"] = date("Y-m-d H:i:s");                
+                    $this->props["update_at"] = date("Y-m-d H:i:s");
                 }
-                    
+
                 foreach($this->blocks["fields"] as $field => $value)
                 {
                     if($field == $value)
                     {
                         $uFields .= ($uFields ? ", " : "")."$field = ?";
-                        $uValues[] = &$this->props[$field];                    
+                        $uValues[] = &$this->props[$field];
                     }
-                    else 
+                    else
                         $uFields .= ($uFields ? ", " : "")."$field = $value";
                 }
-                
+
                 if(isset($this->params["fields"]))
                     $uValues = array_merge($uValues, $this->params["fields"]);
             }
@@ -931,7 +943,7 @@
                     $uValues[] = &$this->props[$field];
                 }
             }
-            
+
             $this->exec("UPDATE "
                         .$this->blocks["from"]
                         ." SET $uFields"
@@ -945,6 +957,11 @@
 
 		return $this->_stmt->affected_rows;
 	}
+
+    public function affected_rows()
+    {
+        return $this->_stmt->affected_rows;
+    }
 
 	/*/
      * Borra registros en la tabla.
@@ -968,7 +985,7 @@
             $this->exec();
         else
 		{
-            if(!isset($this->blocks["where"]))
+            if(!isset($this->blocks["where"]) && $this->issetpk())
             {
                 foreach($this->_pk as $field)
                     $this->where($field, "=", $this->props[$field]);
@@ -1045,11 +1062,12 @@
 	/*/
 	private function joiner($table, $using, $type)
     {
-        $this->blocks["from"] .= " $type ".(is_array($table) ? $table[0]." AS ".$table[1] : $table);
+        $this->blocks["from"] .= (is_array($table) ? " $type ".array_keys($table)[0]." ".array_values($table)[0] : " $type $table");
         if($using)
             $this->blocks["from"] .= " USING (".(is_array($using) ? implode(", ",$using) : $using).") ";
 
-        $this->_dialog["join"] = true;
+        $this->_dialog["from"] = true; 
+        $this->_dialog["on"] = true;
 
 		return $this;
 	}
@@ -1059,6 +1077,7 @@
 	public function rightJoin   ($table, $using = false) { return $this->joiner($table, $using, "RIGHT JOIN");    }
 	public function naturalJoin ($table, $using = false) { return $this->joiner($table, $using, "NATURAL JOIN");  }
 	public function straightJoin($table, $using = false) { return $this->joiner($table, $using, "STRAIGHT_JOIN"); }
+	public function andJoin     ($table)                 { return $this->joiner($table, false , ",");             }
 
 	/*/
      * Metodos para agregar condiciones a las relaciones entre tablas.
@@ -1070,21 +1089,21 @@
 	 * @param string $joiner Union de condiciones.
 	 * @return SwifTable
 	/*/
-	private function oner($from, $rel, $to, $joiner)
+	private function oner($from, $rel, $to, $joiner, $bind)
 	{
-        if(isset($this->_dialog["join"]))
+        if(isset($this->_dialog["on"]))
         {
-            $this->blocks["from"] .= " ON $from $rel $to";
-            unset($this->_dialog["join"]);
+            $this->blocks["from"] .= " ON ";
+            unset($this->_dialog["on"], $this->_dialog["from"]);
         }
-        else
-           $this->blocks["from"] .= " $joiner $from $rel $to";
+        
+        $this->cond($from, $rel, $to, $joiner, "from", $bind);
 
 		return $this;
 	}
-	public function on   ($from, $rel, $to) { return $this->oner($from, $rel, $to, "AND"); }
-	public function orOn ($from, $rel, $to) { return $this->oner($from, $rel, $to, "OR");  }
-	public function xorOn($from, $rel, $to) { return $this->oner($from, $rel, $to, "XOR"); }
+	public function on   ($from, $rel = null, $to = null, $bind = false) { return $this->oner($from, $rel, $to, "AND", $bind); }
+	public function orOn ($from, $rel = null, $to = null, $bind = false) { return $this->oner($from, $rel, $to, "OR", $bind);  }
+	public function xorOn($from, $rel = null, $to = null, $bind = false) { return $this->oner($from, $rel, $to, "XOR", $bind); }
 
 	/*/
      * Metodos para agregar condiciones a una consulta.
@@ -1095,7 +1114,7 @@
 	 * @param string         $joiner  Tipo de union entre parametros.
 	 * @return SwifTable
 	/*/
-	private function cond($prop, $rel, $values, $joiner, $cond)
+	private function cond($prop, $rel, $values, $joiner, $cond, $bind = true)
 	{
         if(isset($this->_dialog["query"]))
             unset($this->_dialog["query"]);
@@ -1103,7 +1122,7 @@
         if(!isset($this->blocks[$cond]) || !$this->blocks[$cond])
         {
             $this->blocks[$cond] = " ".strtoupper($cond)." ";
-            $this->_dialog[$cond] = false;
+            unset($this->_dialog[$cond]);
         }
 
         if($prop == ")")
@@ -1111,13 +1130,13 @@
             $this->blocks[$cond] .= " ) ";
             $this->_dialog[$cond] = true;
         } else {
-            if($this->_dialog[$cond])
+            if(isset($this->_dialog[$cond]))
                 $this->blocks[$cond] .= $joiner;
 
             if($prop == "(")
             {
                 $this->blocks[$cond] .= " ( ";
-                $this->_dialog[$cond] = false;
+                unset($this->_dialog[$cond]);
             }
             else
             {
@@ -1132,29 +1151,42 @@
                         $this->blocks[$cond] .= " ? BETWEEN $values[0] AND $values[1] ";
                         $this->params[$cond][] = &$prop;
                     break;
+                    case "RAW BETWEEN" :
+                        $this->blocks[$cond] .= " $prop BETWEEN $values[0] AND $values[1] ";
+                    break;
                     case "IN" :
-                        $this->blocks[$cond] .= " $prop IN (";
                         if(is_array($values))
                         {
-                            $this->blocks[$cond] .= rtrim(str_repeat("?, ", count($values)),", ");
-                            foreach($values as &$val)
-                                $this->params[$cond][] = &$val;
+                            if($values)
+                            {
+                                $this->blocks[$cond] .= " $prop IN (";
+                                $this->blocks[$cond] .= rtrim(str_repeat("?, ", count($values)), ", ");
+                                foreach($values as &$val)
+                                    $this->params[$cond][] = &$val;
+                                $this->blocks[$cond] .= ") ";
+                            }
+                            else
+                                $this->blocks[$cond] .= " FALSE ";
                         } else {
-                            $this->blocks[$cond] .= "?";
+                            $this->blocks[$cond] .= " $prop = ? ";
                             $this->params[$cond][] = &$values;
                         }
-                        $this->blocks[$cond] .= ") ";
                     break;
                     case "IS NULL" :
                     case "IS NOT NULL" :
                         $this->blocks[$cond] .= " $prop $rel ";
                     break;
                     default :
-                        $this->blocks[$cond] .= " $prop $rel ? ";
-                        if(is_array($values))
-                            $this->params[$cond][] = &$values[0];
+                        if($bind)
+                        {
+                            $this->blocks[$cond] .= " $prop $rel ? ";
+                            if(is_array($values))
+                                $this->params[$cond][] = &$values[0];
+                            else
+                                $this->params[$cond][] = &$values;
+                        }
                         else
-                            $this->params[$cond][] = &$values;
+                            $this->blocks[$cond] .= " $prop $rel $values ";
                     break;
                 }
                 $this->_dialog[$cond] = true;
@@ -1163,9 +1195,9 @@
 
 		return $this;
 	}
-	public function where    ($prop, $rel = null, $val = null) { return $this->cond($prop, $rel, $val, "AND", "where" ); }
-	public function orWhere  ($prop, $rel = null, $val = null) { return $this->cond($prop, $rel, $val, "OR" , "where" ); }
-	public function xorWhere ($prop, $rel = null, $val = null) { return $this->cond($prop, $rel, $val, "XOR", "where" ); }
+	public function where    ($prop, $rel = null, $val = null, $bind = true) { return $this->cond($prop, $rel, $val, "AND", "where", $bind); }
+	public function orWhere  ($prop, $rel = null, $val = null, $bind = true) { return $this->cond($prop, $rel, $val, "OR" , "where", $bind); }
+	public function xorWhere ($prop, $rel = null, $val = null, $bind = true) { return $this->cond($prop, $rel, $val, "XOR", "where", $bind); }
 
 	/*/
      * Crea una agrupamiento para la proxima consulta.
@@ -1282,9 +1314,13 @@
 	/*/
 	public function transaction($on = true)
 	{
-		$this->flush();
-		$this->exec(($on ? "START TRANSACTION" : "ROLLBACK"), $this->_bindParams, false, $this->_stmt);
-		self::$_instance->autocommit($on);
+        if($on)
+        {
+            $this->exec("START TRANSACTION");
+            self::$_instance->autocommit(false);
+        }
+        else
+            self::$_instance->autocommit(true);
 
 		return $this;
 	}
@@ -1292,14 +1328,13 @@
 	/*/
      * Realiza un commit manual de las sentencias actuales.
 	 * @since 1.9.0
-	 * @param bool     $sp Indica si se confirmara hasta un savepoint determinado o toda la transaccion.
+	 * @param mixed     $sp Indica si se confirmara hasta un savepoint determinado o toda la transaccion.
 	 * @return SwifTable
 	/*/
-	protected function commit($sp = false)
+	public function commit($sp = false)
 	{
-		$this->flush(false);
 		if($sp)
-			$this->exec("RELEASE SAVEPOINT $sp", $this->_bindParams, false, $this->_stmt);
+			$this->exec("RELEASE SAVEPOINT $sp");
 		else
 			self::$_instance->commit();
 
@@ -1312,11 +1347,10 @@
 	 * @param bool     $sp Indica si se revertira hasta un savepoint determinado o toda la transaccion.
 	 * @return SwifTable
 	/*/
-	protected function rollback($savepoint = false)
+	public function rollback($sp = false)
 	{
-		$this->flush(false);
 		if($sp)
-			$this->exec("ROLLBACK TO SAVEPOINT $sp", $this->_bindParams, false, $this->_stmt);
+			$this->exec("ROLLBACK TO $sp");
 		else
 			self::$_instance->rollback();
 
@@ -1328,10 +1362,9 @@
 	 * @since 1.9.0
 	 * @return SwifTable
 	/*/
-	protected function savepoint($sp)
+	public function savepoint($sp)
 	{
-		$this->flush(false);
-		$this->exec("SAVEPOINT $sp", $this->_bindParams, false, $this->_stmt);
+		$this->exec("SAVEPOINT $sp");
 
 		return $this;
 	}
